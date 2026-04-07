@@ -1,0 +1,170 @@
+# AI Customer Support Automation — OpenEnv
+
+name: ai-customer-support-automation
+version: "1.0.0"
+description: >
+  An OpenEnv-compliant reinforcement learning environment that simulates
+  a real-world SaaS customer support system. An AI agent handles support
+  tickets by choosing from four actions — reply, refund, escalate, close —
+  across three difficulty levels with dense, deterministic rewards.
+
+author: "AI Customer Support Automation Contributors"
+license: MIT
+openenv_version: "0.1.0"
+
+# ---------------------------------------------------------------------------
+# Environment metadata
+# ---------------------------------------------------------------------------
+
+environment:
+  entry_point: "env.environment:CustomerSupportEnv"
+  api:
+    reset:
+      signature: "reset(task_id: str, scenario_index: int = 0) -> Observation"
+      http: "POST /reset"
+    step:
+      signature: "step(action: Action) -> Tuple[Observation, Reward, bool, dict]"
+      http: "POST /step"
+    state:
+      signature: "state() -> dict"
+      http: "GET /state"
+
+# ---------------------------------------------------------------------------
+# Observation space
+# ---------------------------------------------------------------------------
+
+observation:
+  type: object
+  fields:
+    ticket_id:
+      type: string
+      description: "Unique ticket identifier (e.g. TKT-8A3F2C01)"
+    user_message:
+      type: string
+      description: "Most recent message from the customer"
+    user_type:
+      type: string
+      enum: [premium, standard, trial]
+      description: "Customer tier"
+    history:
+      type: array
+      items:
+        role: string        # 'customer' | 'agent'
+        content: string
+        timestamp: string   # ISO-8601
+      description: "Full conversation history (oldest first)"
+    status:
+      type: string
+      enum: [open, pending, escalated, resolved, closed]
+    metadata:
+      type: object
+      description: "Extra context — account_age_days, plan, previous_refunds, charge_amount_usd, issue_type, mfa_enabled"
+    step_number:
+      type: integer
+    task_id:
+      type: string
+
+# ---------------------------------------------------------------------------
+# Action space
+# ---------------------------------------------------------------------------
+
+action:
+  type: object
+  fields:
+    action_type:
+      type: string
+      enum: [reply, refund, escalate, close]
+      description: "Which action to perform"
+    content:
+      type: string
+      nullable: true
+      description: "Reply text (required when action_type=reply)"
+    reason:
+      type: string
+      nullable: true
+      description: "Agent's stated rationale (used for scoring)"
+
+# ---------------------------------------------------------------------------
+# Reward
+# ---------------------------------------------------------------------------
+
+reward:
+  type: object
+  range: [0.0, 1.0]
+  dense: true
+  fields:
+    score:
+      type: float
+      range: [0.0, 1.0]
+    components:
+      type: object
+      description: "Breakdown — resolution, tone_quality, efficiency, escalation_decision, empathy, compensation, penalty, bonus"
+    feedback:
+      type: string
+    done:
+      type: boolean
+
+# ---------------------------------------------------------------------------
+# Tasks
+# ---------------------------------------------------------------------------
+
+tasks:
+  - id: task_easy
+    title: "Simple Refund Request"
+    difficulty: easy
+    max_steps: 6
+    success_threshold: 0.65
+    description: >
+      A premium customer was billed incorrectly.
+      Ideal path: REFUND → CLOSE in ≤ 2 steps.
+      Penalties for over-escalation.
+
+  - id: task_medium
+    title: "Login / Access Issue"
+    difficulty: medium
+    max_steps: 8
+    success_threshold: 0.60
+    description: >
+      A customer cannot log in.
+      Agent must troubleshoot; escalate only for MFA lockouts.
+      Penalties for over-escalation on resolvable cases.
+
+  - id: task_hard
+    title: "Angry Customer Complaint"
+    difficulty: hard
+    max_steps: 10
+    success_threshold: 0.55
+    description: >
+      An upset customer demands compensation or management.
+      Agent must demonstrate empathy, decide on compensation,
+      and escalate high-severity cases.
+      Closing without escalation on furious customers is penalised.
+
+# ---------------------------------------------------------------------------
+# Docker / deployment
+# ---------------------------------------------------------------------------
+
+docker:
+  base_image: "python:3.11-slim"
+  port: 7860
+  build_command: "docker build -t ai-customer-support-env ."
+  run_command: "docker run -p 7860:7860 ai-customer-support-env"
+
+huggingface_spaces:
+  sdk: gradio
+  sdk_version: "4.36"
+  app_file: app.py
+  python_version: "3.11"
+  port: 7860
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+validation:
+  checks:
+    - reward_score_in_bounds       # 0.0 ≤ score ≤ 1.0
+    - observation_schema_valid     # all required fields present
+    - done_terminates_episode      # step() raises after done=True
+    - reset_clears_state           # cumulative_score resets to 0
+    - deterministic_graders        # same actions → same score (seeded)
